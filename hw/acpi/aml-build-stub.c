@@ -101,3 +101,13 @@ Aml *aml_buffer(int buffer_size, uint8_t *byte_list)
 {
     return NULL;
 }
+
+Aml *aml_string(const char *name_format, ...)
+{
+    return NULL;
+}
+
+Aml *aml_touuid(const char *uuid)
+{
+    return NULL;
+}
