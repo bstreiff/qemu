@@ -46,6 +46,7 @@ struct ISASerialState {
     uint32_t pcr;
 
     char *transceiver;
+    char *model;
 
     SerialState state;
 };
@@ -61,6 +62,28 @@ struct ISASerialState {
 #define NI16550_PMR_MODE_RS232  0x00
 #define NI16550_PMR_MODE_RS485  0x10
 #define NI16550_PCR 0x0F
+
+enum NIModelType {
+    NI_MODEL_UNKNOWN,
+    NI_MODEL_NIC7750,
+    NI_MODEL_NIC7772,
+    NI_MODEL_NIC792B,
+    NI_MODEL_NIC7A69,
+};
+
+static enum NIModelType ni16550_get_model_type(ISASerialState *s) {
+    if (strcasecmp("nic7750", s->model) == 0) {
+        return NI_MODEL_NIC7750;
+    } else if (strcasecmp("nic7772", s->model) == 0) {
+        return NI_MODEL_NIC7772;
+    } else if (strcasecmp("nic792b", s->model) == 0) {
+        return NI_MODEL_NIC792B;
+    } else if (strcasecmp("nic7a69", s->model) == 0) {
+        return NI_MODEL_NIC7A69;
+    } else {
+        return NI_MODEL_UNKNOWN;
+    }
+}
 
 static void ni16550_ioport_write(void *opaque, hwaddr addr, uint64_t val,
                                  unsigned size)
@@ -140,6 +163,17 @@ static void serial_isa_realizefn(DeviceState *dev, Error **errp)
     ISADevice *isadev = ISA_DEVICE(dev);
     ISASerialState *isa = ISA_SERIAL(dev);
     SerialState *s = &isa->state;
+    enum NIModelType model;
+
+    if (!isa->model) {
+        model = NI_MODEL_NIC7A69;
+    } else {
+        model = ni16550_get_model_type(isa);
+        if (model == NI_MODEL_UNKNOWN) {
+                error_setg(errp, "Unknown model type %s.", isa->model);
+                return;
+        }
+    }
 
     if (isa->index == -1) {
         isa->index = autoindex;
@@ -157,6 +191,7 @@ static void serial_isa_realizefn(DeviceState *dev, Error **errp)
         } else {
             error_setg(errp, "Unknown transceiver type %s, must be RS-232/RS-485/dual.",
                        isa->transceiver);
+            return;
         }
     }
 
@@ -197,6 +232,7 @@ static void serial_isa_realizefn(DeviceState *dev, Error **errp)
 static void serial_isa_build_aml(AcpiDevAmlIf *adev, Aml *scope)
 {
     ISASerialState *isa = ISA_SERIAL(adev);
+    enum NIModelType model;
     Aml *dev;
     Aml *crs;
     Aml *clkfreq;
@@ -205,43 +241,61 @@ static void serial_isa_build_aml(AcpiDevAmlIf *adev, Aml *scope)
     Aml *fpga;
     Aml *props;
     Aml *dsd;
+    const char *hid;
+
+    if (!isa->model) {
+        model = NI_MODEL_NIC7A69;
+    } else {
+        model = ni16550_get_model_type(isa);
+    }
+
+    if (model == NI_MODEL_NIC7750)
+        hid = "NIC7750";
+    else if (model == NI_MODEL_NIC7772)
+        hid = "NIC7772";
+    else if (model == NI_MODEL_NIC792B)
+        hid = "NIC792B";
+    else
+        hid = "NIC7A69";
 
     crs = aml_resource_template();
     aml_append(crs, aml_io(AML_DECODE16, isa->iobase, isa->iobase, 0x00, 0x10));
     aml_append(crs, aml_irq_no_flags(isa->isairq));
 
     dev = aml_device("UAR%d", isa->index + 1);
-    aml_append(dev, aml_name_decl("_HID", aml_eisaid("NIC7A69")));
+    aml_append(dev, aml_name_decl("_HID", aml_eisaid(hid)));
     aml_append(dev, aml_name_decl("_UID", aml_int(isa->index + 1)));
     aml_append(dev, aml_name_decl("_DDN", aml_string("COM%d", isa->index + 1)));
     aml_append(dev, aml_name_decl("_STA", aml_int(0xf)));
     aml_append(dev, aml_name_decl("_CRS", crs));
 
-    clkfreq = aml_package(0x2);
-    aml_append(clkfreq, aml_string("clock-frequency"));
-    aml_append(clkfreq, aml_int(29629629));
-    prescaler = aml_package(0x2);
-    aml_append(prescaler, aml_string("clock-prescaler"));
-    aml_append(prescaler, aml_int(0));
-    transceiver = aml_package(0x2);
-    aml_append(transceiver, aml_string("transceiver"));
-    if ((isa->pmr & NI16550_PMR_CAP_MASK) == NI16550_PMR_CAP_RS232) {
-        aml_append(transceiver, aml_string("RS-232"));
-    } else {
-        aml_append(transceiver, aml_string("RS-485"));
+    if (model == NI_MODEL_NIC7A69) {
+        clkfreq = aml_package(0x2);
+        aml_append(clkfreq, aml_string("clock-frequency"));
+        aml_append(clkfreq, aml_int(29629629));
+        prescaler = aml_package(0x2);
+        aml_append(prescaler, aml_string("clock-prescaler"));
+        aml_append(prescaler, aml_int(0));
+        transceiver = aml_package(0x2);
+        aml_append(transceiver, aml_string("transceiver"));
+        if ((isa->pmr & NI16550_PMR_CAP_MASK) == NI16550_PMR_CAP_RS232) {
+            aml_append(transceiver, aml_string("RS-232"));
+        } else {
+            aml_append(transceiver, aml_string("RS-485"));
+        }
+        fpga = aml_package(0x2);
+        aml_append(fpga, aml_string("fpga"));
+        aml_append(fpga, aml_int(0));
+        props = aml_package(0x4);
+        aml_append(props, clkfreq);
+        aml_append(props, prescaler);
+        aml_append(props, transceiver);
+        aml_append(props, fpga);
+        dsd = aml_package(0x2);
+        aml_append(dsd, aml_touuid("DAFFD814-6EBA-4D8C-8A91-BC9BBF4AA301"));
+        aml_append(dsd, props);
+        aml_append(dev, aml_name_decl("_DSD", dsd));
     }
-    fpga = aml_package(0x2);
-    aml_append(fpga, aml_string("fpga"));
-    aml_append(fpga, aml_int(0));
-    props = aml_package(0x4);
-    aml_append(props, clkfreq);
-    aml_append(props, prescaler);
-    aml_append(props, transceiver);
-    aml_append(props, fpga);
-    dsd = aml_package(0x2);
-    aml_append(dsd, aml_touuid("DAFFD814-6EBA-4D8C-8A91-BC9BBF4AA301"));
-    aml_append(dsd, props);
-    aml_append(dev, aml_name_decl("_DSD", dsd));
 
     aml_append(scope, dev);
 }
@@ -261,6 +315,7 @@ static Property serial_isa_properties[] = {
     DEFINE_PROP_UINT32("iobase", ISASerialState, iobase,  -1),
     DEFINE_PROP_UINT32("irq",    ISASerialState, isairq,  -1),
     DEFINE_PROP_STRING("transceiver", ISASerialState, transceiver),
+    DEFINE_PROP_STRING("model",  ISASerialState, model),
     DEFINE_PROP_END_OF_LIST(),
 };
 
